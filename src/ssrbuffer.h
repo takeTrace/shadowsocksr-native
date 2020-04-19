@@ -38,7 +38,7 @@
 #else
 
 #define MEM_CHECK_BEGIN() do { ; } while(0)
-#define MEM_CHECK_BREAK_ALLOC(x) do { x; } while(0)
+#define MEM_CHECK_BREAK_ALLOC(x) do { (void)x; } while(0)
 #define MEM_CHECK_DUMP_LEAKS() do { ; } while(0)
 
 #endif // __MEM_CHECK__
@@ -67,5 +67,7 @@ void buffer_replace(struct buffer_t *dst, const struct buffer_t *src);
 size_t buffer_concatenate(struct buffer_t *ptr, const uint8_t *data, size_t size);
 size_t buffer_concatenate2(struct buffer_t *dst, const struct buffer_t *src);
 void buffer_shortened_to(struct buffer_t *ptr, size_t begin, size_t len);
+
+uint8_t * mem_insert(const uint8_t *src, size_t src_size, size_t pos, const uint8_t *chunk, size_t chunk_size, void*(*allocator)(size_t), size_t *total_size);
 
 #endif // __SSR_BUFFER_H__

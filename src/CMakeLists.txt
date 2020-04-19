@@ -182,6 +182,11 @@ if (!APPLE)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
 endif()
 
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_definitions(-Wall -Werror -ggdb3 -std=c99 -Wextra -pedantic)
+    add_definitions("-D_DEFAULT_SOURCE -D_GNU_SOURCE")
+endif()
+
 if (UNIX)
 if (APPLE)
 else()

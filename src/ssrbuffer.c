@@ -42,6 +42,7 @@ void check_memory_content(struct buffer_t *buf) {
         }
     }
 #endif // __MEM_CHECK__
+    (void)buf;
 }
 
 #if defined(__APPLE__)
@@ -63,7 +64,6 @@ static size_t _memory_size_internal(void *ptr) {
 #endif
 }
 
-
 struct buffer_t * buffer_create(size_t capacity) {
     struct buffer_t *ptr = (struct buffer_t *) calloc(1, sizeof(struct buffer_t));
     assert(ptr);
@@ -71,7 +71,9 @@ struct buffer_t * buffer_create(size_t capacity) {
     assert(ptr->buffer);
     ptr->capacity = capacity;
     ptr->ref_count = 1;
-    assert(ptr->capacity <= _memory_size_internal(ptr->buffer));
+    if (ptr->capacity > _memory_size_internal(ptr->buffer)) {
+        assert(0);
+    }
     return ptr;
 }
 
@@ -181,14 +183,13 @@ void buffer_replace(struct buffer_t *dst, const struct buffer_t *src) {
 }
 
 void buffer_insert(struct buffer_t *ptr, size_t pos, const uint8_t *data, size_t size) {
-    size_t result;
     if (ptr==NULL || data==NULL || size==0) {
         return;
     }
     if (pos > ptr->len) {
         pos = ptr->len;
     }
-    result = buffer_realloc(ptr, ptr->len + size);
+    buffer_realloc(ptr, ptr->len + size);
     memmove(ptr->buffer + pos + size, ptr->buffer + pos, ptr->len - pos);
     memmove(ptr->buffer + pos, data, size);
     ptr->len += size;
@@ -238,4 +239,39 @@ void buffer_release(struct buffer_t *ptr) {
         free(ptr->buffer);
     }
     free(ptr);
+}
+
+uint8_t * mem_insert(const uint8_t *src, size_t src_size, size_t pos, const uint8_t *chunk, size_t chunk_size, void*(*allocator)(size_t), size_t *total_size) {
+    uint8_t *result;
+    size_t total = 0;
+    if (allocator==NULL) {
+        return NULL;
+    }
+    if (src == NULL) {
+        src_size = 0;
+    }
+    if (pos > src_size) {
+        pos = src_size;
+    }
+    if (chunk == NULL) {
+        chunk_size = 0;
+    }
+    total = src_size + chunk_size;
+    if (total_size) {
+        *total_size = total;
+    }
+    if (total == 0) {
+        return NULL;
+    }
+    result = (uint8_t *) allocator(total + 1);
+    if (result == NULL) {
+        return NULL;
+    }
+    memset(result, 0, (total + 1));
+
+    memmove(result, src, pos);
+    memmove(result + pos + chunk_size, src + pos, src_size - pos);
+    memmove(result + pos, chunk, chunk_size);
+
+    return result;
 }
