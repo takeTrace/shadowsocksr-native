@@ -82,11 +82,7 @@ size_t get_fd_tcp_mss(socket_fd fd) {
     int mss = 0;
     socklen_t len = sizeof(mss);
 
-#if defined(WIN32) || defined(_WIN32)
     getsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, (char *)&mss, &len);
-#else
-    getsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, &mss, &len);
-#endif
     if (50 < mss && mss <= NETWORK_MTU) {
         _tcp_mss = (size_t) mss;
     }
@@ -567,6 +563,7 @@ static void socket_close(struct socket_ctx *c) {
     c->handle.handle.data = c;
 
     uv_read_stop(&c->handle.stream);
+    socket_timer_stop(c);
 
     tunnel_add_ref(tunnel);
     uv_close(&c->handle.handle, socket_close_done_cb);
