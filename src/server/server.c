@@ -111,6 +111,10 @@ static void resolved_ips_destroy_object(void *obj);
 void print_server_info(const struct server_config *config);
 static void svr_usage(void);
 
+void on_atexit(void) {
+    MEM_CHECK_DUMP_LEAKS();
+}
+
 int main(int argc, char * const argv[]) {
     struct server_config *config = NULL;
     int err = -1;
@@ -119,6 +123,7 @@ int main(int argc, char * const argv[]) {
     MEM_CHECK_BEGIN();
     MEM_CHECK_BREAK_ALLOC(63);
     MEM_CHECK_BREAK_ALLOC(64);
+    atexit(on_atexit);
 
     do {
         set_app_name(argv[0]);
@@ -141,6 +146,8 @@ int main(int argc, char * const argv[]) {
         if (parse_config_file(true, cmds->cfg_file, config) == false) {
             break;
         }
+
+        config_ssrot_revision(config);
 
         config_parse_protocol_param(config, config->protocol_param);
 
@@ -172,7 +179,6 @@ int main(int argc, char * const argv[]) {
     if (err != 0) {
         svr_usage();
     }
-    MEM_CHECK_DUMP_LEAKS();
     return 0;
 }
 
@@ -968,7 +974,7 @@ static void do_tls_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *so
             struct http_headers *hdrs = http_headers_parse(true, indata, len);
             size_t cb = http_headers_get_content_beginning(hdrs);
             struct buffer_t *buf = buffer_create_from(indata + cb, len - cb);
-            result = tunnel_tls_cipher_server_decrypt(ctx->cipher, buf, &receipt, &confirm);
+            result = tunnel_cipher_server_decrypt(ctx->cipher, buf, &receipt, &confirm);
             http_headers_destroy(hdrs);
             buffer_release(buf);
         }
@@ -1064,7 +1070,7 @@ static uint8_t* tunnel_extract_data(struct socket_ctx *socket, void*(*allocator)
         if (socket == tunnel->outgoing) {
             if (config->over_tls_enable) {
                 ws_frame_info info = { WS_OPCODE_BINARY, false, false, 0, 0, 0 };
-                struct buffer_t *tmp = tunnel_tls_cipher_server_encrypt(cipher_ctx, src);
+                struct buffer_t *tmp = tunnel_cipher_server_encrypt(cipher_ctx, src);
                 uint8_t *frame;
                 if (!ctx->ws_tls_beginning) {
                     ctx->ws_tls_beginning = true;
@@ -1101,7 +1107,7 @@ static uint8_t* tunnel_extract_data(struct socket_ctx *socket, void*(*allocator)
                     buffer_shortened_to(ctx->client_delivery_cache, info.frame_size, buf_len - info.frame_size);
 
                     pb = buffer_create_from(payload, info.payload_size);
-                    tmp = tunnel_tls_cipher_server_decrypt(cipher_ctx, pb, &receipt, &confirm);
+                    tmp = tunnel_cipher_server_decrypt(cipher_ctx, pb, &receipt, &confirm);
                     buffer_release(pb);
 
                     buffer_concatenate2(buf, tmp);
