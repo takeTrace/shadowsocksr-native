@@ -39,9 +39,9 @@ struct ssr_server_state {
 
 enum tunnel_stage {
     tunnel_stage_initial = 0,  /* Initial stage                    */
-    tunnel_stage_receipt_done,
-    tunnel_stage_client_feedback,
-    tunnel_stage_confirm_done,
+    tunnel_stage_obfs_receipt_done,
+    tunnel_stage_client_feedback_coming,
+    tunnel_stage_proto_confirm_done,
     tunnel_stage_resolve_host = 4,  /* Resolve the hostname             */
     tunnel_stage_connect_host,
     tunnel_stage_launch_streaming,
@@ -93,7 +93,7 @@ static bool is_header_complete(const struct buffer_t *buf);
 static size_t _get_read_size(struct tunnel_ctx *tunnel, struct socket_ctx *socket, size_t suggested_size);
 static void do_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *incoming);
 static void do_prepare_parse(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
-static void do_client_feedback(struct tunnel_ctx *tunnel, struct socket_ctx *incoming);
+static void do_handle_client_feedback(struct tunnel_ctx *tunnel, struct socket_ctx *incoming);
 static void do_parse(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
 static void do_resolve_host_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
 static void do_connect_host_start(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
@@ -416,22 +416,22 @@ static void do_next(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
         }
         do_init_package(tunnel, incoming);
         break;
-    case tunnel_stage_receipt_done:
+    case tunnel_stage_obfs_receipt_done:
         ASSERT(incoming == socket);
         ASSERT(incoming->rdstate == socket_state_stop);
         ASSERT(incoming->wrstate == socket_state_done);
         incoming->wrstate = socket_state_stop;
         socket_read(incoming, true);
-        ctx->stage = tunnel_stage_client_feedback;
+        ctx->stage = tunnel_stage_client_feedback_coming;
         break;
-    case tunnel_stage_client_feedback:
+    case tunnel_stage_client_feedback_coming:
         ASSERT(incoming == socket);
         ASSERT(incoming->rdstate == socket_state_done);
         ASSERT(incoming->wrstate == socket_state_stop);
         incoming->rdstate = socket_state_stop;
-        do_client_feedback(tunnel, incoming);
+        do_handle_client_feedback(tunnel, incoming);
         break;
-    case tunnel_stage_confirm_done:
+    case tunnel_stage_proto_confirm_done:
         ASSERT(incoming == socket);
         ASSERT(incoming->rdstate == socket_state_stop);
         ASSERT(incoming->wrstate == socket_state_done);
@@ -603,8 +603,8 @@ static size_t _get_read_size(struct tunnel_ctx *tunnel, struct socket_ctx *socke
 
 static void do_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *incoming) {
     struct server_ctx *ctx = (struct server_ctx *) tunnel->data;
-    struct buffer_t *receipt = NULL;
-    struct buffer_t *confirm = NULL;
+    struct buffer_t *obfs_receipt = NULL;
+    struct buffer_t *proto_confirm = NULL;
     struct buffer_t *result = NULL;
     struct buffer_t *buf = buffer_create_from((uint8_t *)incoming->buf->base, incoming->result);
     do {
@@ -621,12 +621,12 @@ static void do_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *incomi
         ctx->cipher = tunnel_cipher_create(ctx->env, tcp_mss);
         ctx->_tcp_mss = tcp_mss;
 
-        result = tunnel_cipher_server_decrypt(ctx->cipher, buf, &receipt, &confirm);
+        result = tunnel_cipher_server_decrypt(ctx->cipher, buf, &obfs_receipt, &proto_confirm);
 
-        if (receipt) {
-            ASSERT(confirm == NULL);
-            socket_write(incoming, receipt->buffer, receipt->len);
-            ctx->stage = tunnel_stage_receipt_done;
+        if (obfs_receipt) {
+            ASSERT(proto_confirm == NULL);
+            socket_write(incoming, obfs_receipt->buffer, obfs_receipt->len);
+            ctx->stage = tunnel_stage_obfs_receipt_done;
             break;
         }
 
@@ -637,10 +637,10 @@ static void do_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *incomi
 
         buffer_replace(ctx->init_pkg, result);
 
-        if (confirm) {
-            ASSERT(receipt == NULL);
-            socket_write(incoming, confirm->buffer, confirm->len);
-            ctx->stage = tunnel_stage_confirm_done;
+        if (proto_confirm) {
+            ASSERT(obfs_receipt == NULL);
+            socket_write(incoming, proto_confirm->buffer, proto_confirm->len);
+            ctx->stage = tunnel_stage_proto_confirm_done;
             break;
         }
 
@@ -649,8 +649,8 @@ static void do_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *incomi
     } while (0);
 
     buffer_release(buf);
-    buffer_release(receipt);
-    buffer_release(confirm);
+    buffer_release(obfs_receipt);
+    buffer_release(proto_confirm);
     buffer_release(result);
 }
 
@@ -690,12 +690,12 @@ static void do_prepare_parse(struct tunnel_ctx *tunnel, struct socket_ctx *socke
     } while (0);
 }
 
-static void do_client_feedback(struct tunnel_ctx *tunnel, struct socket_ctx *incoming) {
+static void do_handle_client_feedback(struct tunnel_ctx *tunnel, struct socket_ctx *incoming) {
     struct server_ctx *ctx = (struct server_ctx *) tunnel->data;
     struct buffer_t *buf = buffer_create_from((uint8_t *)incoming->buf->base, incoming->result);
     struct buffer_t *result = NULL;
-    struct buffer_t *receipt = NULL;
-    struct buffer_t *confirm = NULL;
+    struct buffer_t *obfs_receipt = NULL;
+    struct buffer_t *proto_confirm = NULL;
     do {
         ASSERT(incoming == tunnel->incoming);
 
@@ -705,8 +705,8 @@ static void do_client_feedback(struct tunnel_ctx *tunnel, struct socket_ctx *inc
             break;
         }
 
-        result = tunnel_cipher_server_decrypt(ctx->cipher, buf, &receipt, &confirm);
-        ASSERT(receipt == NULL);
+        result = tunnel_cipher_server_decrypt(ctx->cipher, buf, &obfs_receipt, &proto_confirm);
+        ASSERT(obfs_receipt == NULL);
         if (result==NULL || result->len==0) {
             tunnel->tunnel_shutdown(tunnel);
             break;
@@ -714,9 +714,9 @@ static void do_client_feedback(struct tunnel_ctx *tunnel, struct socket_ctx *inc
 
         buffer_concatenate2(ctx->init_pkg, result);
 
-        if (confirm) {
-            socket_write(incoming, confirm->buffer, confirm->len);
-            ctx->stage = tunnel_stage_confirm_done;
+        if (proto_confirm) {
+            socket_write(incoming, proto_confirm->buffer, proto_confirm->len);
+            ctx->stage = tunnel_stage_proto_confirm_done;
             break;
         }
 
@@ -725,8 +725,8 @@ static void do_client_feedback(struct tunnel_ctx *tunnel, struct socket_ctx *inc
     } while(0);
     buffer_release(buf);
     buffer_release(result);
-    buffer_release(receipt);
-    buffer_release(confirm);
+    buffer_release(obfs_receipt);
+    buffer_release(proto_confirm);
 }
 
 static void do_parse(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
@@ -938,8 +938,8 @@ static void do_launch_streaming(struct tunnel_ctx *tunnel, struct socket_ctx *so
 static void do_tls_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
     struct server_ctx *ctx = (struct server_ctx *) tunnel->data;
     struct server_config *config = ctx->env->config;
-    struct buffer_t *receipt = NULL;
-    struct buffer_t *confirm = NULL;
+    struct buffer_t *obfs_receipt = NULL;
+    struct buffer_t *proto_confirm = NULL;
     struct buffer_t *result = NULL;
     struct http_headers *hdrs = NULL;
     do {
@@ -971,15 +971,13 @@ static void do_tls_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *so
             strcpy(ctx->sec_websocket_key, key);
         }
         {
-            struct http_headers *hdrs = http_headers_parse(true, indata, len);
             size_t cb = http_headers_get_content_beginning(hdrs);
             struct buffer_t *buf = buffer_create_from(indata + cb, len - cb);
-            result = tunnel_cipher_server_decrypt(ctx->cipher, buf, &receipt, &confirm);
-            http_headers_destroy(hdrs);
+            result = tunnel_cipher_server_decrypt(ctx->cipher, buf, &obfs_receipt, &proto_confirm);
             buffer_release(buf);
         }
-        ASSERT(receipt == NULL);
-        ASSERT(confirm == NULL);
+        ASSERT(obfs_receipt == NULL);
+        ASSERT(proto_confirm == NULL);
 
         ASSERT(result /* && result->len!=0 */);
         if (is_legal_header(result) == false) {
@@ -1086,8 +1084,8 @@ static uint8_t* tunnel_extract_data(struct socket_ctx *socket, void*(*allocator)
                 buf = tunnel_cipher_server_encrypt(cipher_ctx, src);
             }
         } else if (socket == tunnel->incoming) {
-            struct buffer_t *receipt = NULL;
-            struct buffer_t *confirm = NULL;
+            struct buffer_t *obfs_receipt = NULL;
+            struct buffer_t *proto_confirm = NULL;
             if (config->over_tls_enable) {
                 buf = buffer_create(SOCKET_DATA_BUFFER_SIZE);
                 buffer_concatenate2(ctx->client_delivery_cache, src);
@@ -1107,7 +1105,7 @@ static uint8_t* tunnel_extract_data(struct socket_ctx *socket, void*(*allocator)
                     buffer_shortened_to(ctx->client_delivery_cache, info.frame_size, buf_len - info.frame_size);
 
                     pb = buffer_create_from(payload, info.payload_size);
-                    tmp = tunnel_cipher_server_decrypt(cipher_ctx, pb, &receipt, &confirm);
+                    tmp = tunnel_cipher_server_decrypt(cipher_ctx, pb, &obfs_receipt, &proto_confirm);
                     buffer_release(pb);
 
                     buffer_concatenate2(buf, tmp);
@@ -1117,10 +1115,10 @@ static uint8_t* tunnel_extract_data(struct socket_ctx *socket, void*(*allocator)
                 } while (true);
                 (void)buf;
             } else {
-                buf = tunnel_cipher_server_decrypt(cipher_ctx, src, &receipt, &confirm);
+                buf = tunnel_cipher_server_decrypt(cipher_ctx, src, &obfs_receipt, &proto_confirm);
             }
-            ASSERT(receipt == NULL);
-            ASSERT(confirm == NULL);
+            ASSERT(obfs_receipt == NULL);
+            ASSERT(proto_confirm == NULL);
         } else {
             ASSERT(0);
         }
