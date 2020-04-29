@@ -1538,7 +1538,7 @@ struct buffer_t * auth_aes128_sha1_server_post_decrypt(struct obfs_t *obfs, stru
             const uint8_t *local_key = buffer_get_data(local->user_key, &local_key_len);
 
             size_t b64len = (size_t) std_base64_encode_len((int)local_key_len);
-            uint8_t *key = (uint8_t*) calloc(b64len + 1, sizeof(*key));
+            uint8_t *key = (uint8_t*) calloc(b64len + strlen(local->salt) + 1, sizeof(*key));
             size_t key_len;
 
             (void)in_data;
@@ -1560,10 +1560,13 @@ struct buffer_t * auth_aes128_sha1_server_post_decrypt(struct obfs_t *obfs, stru
             return buffer_create(1);
         }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstrict-aliasing"
         utc_time = (uint32_t) (*((uint32_t *)(head + 0))); // TODO: ntohl
         client_id = (uint32_t) (*((uint32_t *)(head + 4))); // TODO: ntohl
         connection_id = (uint32_t) (*((uint32_t *)(head + 8))); // TODO: ntohl
         rnd_len = (uint16_t) (*((uint16_t *)(head + 14))); // TODO: ntohs
+#pragma GCC diagnostic pop
         {
             struct buffer_t *_msg = buffer_create_from(buffer_get_data(local->recv_buffer, NULL), length-4);
             local->hmac(sha1data, _msg, local->user_key);
