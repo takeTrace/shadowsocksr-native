@@ -1,5 +1,10 @@
 set(SSR_MAIN_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE INTERNAL "SSR main directory" FORCE)
 
+option(ENABLE_DUMP_INFO "Out put the stage info." OFF)
+if (ENABLE_DUMP_INFO)
+    add_definitions("-D__PRINT_INFO__")
+endif()
+
 set(SOURCE_FILES_SNI
         shadowsocks.h
         socks5.h
@@ -78,8 +83,8 @@ set(SOURCE_FILES_CLIENT
         client/client.c
         client/tls_cli.c
         client/tls_cli.h
-        ws_tls_basic.c
-        ws_tls_basic.h
+        websocket_basic.c
+        websocket_basic.h
         text_in_color.c
         text_in_color.h
         dump_info.c
@@ -106,8 +111,8 @@ set(SOURCE_FILES_SERVER
         ../depends/http-parser/http_parser.h
         ../depends/http-parser/http_parser_wrapper.c
         ../depends/http-parser/http_parser_wrapper.h
-        ws_tls_basic.c
-        ws_tls_basic.h
+        websocket_basic.c
+        websocket_basic.h
         text_in_color.c
         text_in_color.h
         dump_info.c

@@ -1,5 +1,5 @@
-#ifndef __WS_TLS_BASIC_H__
-#define __WS_TLS_BASIC_H__
+#ifndef __WEBSOCKET_BASIC_H__
+#define __WEBSOCKET_BASIC_H__
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -22,6 +22,15 @@ extern "C" {
 #define WEBSOCKET_STATUS    "Switching Protocols"
 #define SEC_WEBSOKET_KEY    "Sec-WebSocket-Key"
 #define SEC_WEBSOKET_ACCEPT "Sec-WebSocket-Accept"
+
+#if !defined(CRLF)
+#define CRLF            "\r\n"
+#define CRLF_LEN        2
+#endif
+#if !defined(CRLFCRLF)
+#define CRLFCRLF        "\r\n\r\n"
+#define CRLFCRLF_LEN    4
+#endif
 
 #ifndef SHA_DIGEST_LENGTH
 #define SHA_DIGEST_LENGTH 20
@@ -89,14 +98,15 @@ static inline void ws_frame_binary_alone(bool masking, ws_frame_info *info) {
     info->masking = masking;
 }
 
+uint8_t* http_header_append_new_field(uint8_t*orig, size_t *len, void*(*re_alloc)(void*, size_t), const char*field);
+uint8_t* http_header_set_payload_data(uint8_t*orig, size_t *len, void*(*re_alloc)(void*, size_t), const uint8_t*data, size_t data_len);
 
 void random_bytes_generator(const char *seed, uint8_t *buffer, size_t len);
 
 char * websocket_generate_sec_websocket_key(void*(*allocator)(size_t));
 char * websocket_generate_sec_websocket_accept(const char *sec_websocket_key, void*(*allocator)(size_t));
 uint8_t * websocket_connect_request(const char *domain, uint16_t port, const char *url,
-    const char *key, const uint8_t *data, size_t data_len, void*(*allocator)(size_t),
-    size_t *result_len);
+    const char *key, void*(*allocator)(size_t), size_t *result_len);
 char * websocket_connect_response(const char *sec_websocket_key, void*(*allocator)(size_t));
 uint8_t * websocket_build_frame(ws_frame_info *info, const uint8_t *payload, size_t payload_len, void*(*allocator)(size_t));
 uint8_t * websocket_build_close_frame(bool masking, ws_close_reason reason, const char *text_info, void*(*allocator)(size_t), size_t *frame_size);
@@ -117,4 +127,4 @@ uint64_t ws_hton64(uint64_t n);
 }
 #endif
 
-#endif /* __WS_TLS_BASIC_H__ */
+#endif /* __WEBSOCKET_BASIC_H__ */
