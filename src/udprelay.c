@@ -58,7 +58,6 @@
 //#include <udns.h>
 
 #include "ssrutils.h"
-#include "netutils.h"
 #include "cache.h"
 #include "udprelay.h"
 #include "encrypt.h"
@@ -67,10 +66,6 @@
 #include "jconf.h"
 
 #include "obfs/obfs.h"
-
-#ifdef MODULE_REMOTE
-#include "resolv.h"
-#endif
 
 #include "common.h"
 #include "sockaddr_universal.h"
