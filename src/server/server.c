@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <getopt.h>
 #include <time.h>
+#include <string.h>
 
 #include "common.h"
 #include "dump_info.h"
@@ -43,7 +44,7 @@ struct ssr_server_state {
     V(0, tunnel_stage_initial,                  "tunnel_stage_initial")                 \
     V(1, tunnel_stage_obfs_receipt_done,        "tunnel_stage_obfs_receipt_done")       \
     V(2, tunnel_stage_client_feedback_coming,   "tunnel_stage_client_feedback_coming")  \
-    V(3, tunnel_stage_proto_confirm_done,       "tunnel_stage_proto_confirm_done")      \
+    V(3, tunnel_stage_protocol_confirm_done,    "tunnel_stage_protocol_confirm_done")   \
     V(4, tunnel_stage_resolve_host,             "tunnel_stage_resolve_host")            \
     V(5, tunnel_stage_connect_host,             "tunnel_stage_connect_host")            \
     V(6, tunnel_stage_launch_streaming,         "tunnel_stage_launch_streaming")        \
@@ -104,7 +105,7 @@ static void tunnel_write_done(struct tunnel_ctx *tunnel, struct socket_ctx *sock
 static size_t tunnel_get_alloc_size(struct tunnel_ctx *tunnel, struct socket_ctx *socket, size_t suggested_size);
 static bool tunnel_is_in_streaming(struct tunnel_ctx* tunnel);
 static uint8_t* tunnel_extract_data(struct socket_ctx *socket, void*(*allocator)(size_t size), size_t *size);
-static void dispatch_center(struct tunnel_ctx* tunnel, struct socket_ctx* socket);
+static void tunnel_dispatcher(struct tunnel_ctx* tunnel, struct socket_ctx* socket);
 
 static bool is_incoming_ip_legal(struct tunnel_ctx *tunnel);
 static bool is_header_complete(const struct buffer_t *buf);
@@ -122,6 +123,7 @@ static void do_tls_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *so
 static size_t _tls_get_read_size(struct tunnel_ctx *tunnel, struct socket_ctx *socket, size_t suggested_size);
 static void do_tls_client_feedback(struct tunnel_ctx *tunnel);
 static void do_tls_launch_streaming(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
+static void tunnel_server_streaming(struct tunnel_ctx* tunnel, struct socket_ctx* socket);
 static void do_udp_launch_streaming(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
 static void tunnel_udp_streaming(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
 static struct buffer_t * build_websocket_frame_from_raw(struct server_ctx *ctx, struct buffer_t *src);
@@ -338,7 +340,7 @@ bool _init_done_cb(struct tunnel_ctx *tunnel, void *p) {
     tunnel->tunnel_get_alloc_size = &tunnel_get_alloc_size;
     tunnel->tunnel_is_in_streaming = &tunnel_is_in_streaming;
     tunnel->tunnel_extract_data = &tunnel_extract_data;
-    tunnel->dispatch_center = &dispatch_center;
+    tunnel->tunnel_dispatcher = &tunnel_dispatcher;
 
     cstl_set_container_add(ctx->env->tunnel_set, tunnel);
 
@@ -371,7 +373,7 @@ void server_shutdown(struct server_env_t *env) {
 void signal_quit_cb(uv_signal_t *handle, int signum) {
     struct server_env_t *env;
     ASSERT(handle);
-    env = (struct server_env_t *)handle->loop->data;
+    env = (handle && handle->loop) ? (struct server_env_t *)handle->loop->data : NULL;
     switch (signum) {
     case SIGINT:
     case SIGTERM:
@@ -379,7 +381,7 @@ void signal_quit_cb(uv_signal_t *handle, int signum) {
     case SIGUSR1:
 #endif
     {
-    struct ssr_server_state *state = (struct ssr_server_state *)env->data;
+    struct ssr_server_state *state = env ? (struct ssr_server_state *)env->data : NULL;
         ASSERT(state);
         ssr_server_shutdown(state);
     }
@@ -414,7 +416,7 @@ static void tunnel_dying(struct tunnel_ctx *tunnel) {
     free(ctx);
 }
 
-static void dispatch_center(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
+static void tunnel_dispatcher(struct tunnel_ctx* tunnel, struct socket_ctx* socket) {
     bool done = false;
     struct server_ctx *ctx = (struct server_ctx *)tunnel->data;
     struct server_config *config = ctx->env->config;
@@ -424,6 +426,7 @@ static void dispatch_center(struct tunnel_ctx *tunnel, struct socket_ctx *socket
 #if defined(__PRINT_INFO__)
     pr_info("%s", info);
 #endif
+    strncpy(tunnel->extra_info, info, 0x100 - 1);
     switch (ctx->stage) {
     case tunnel_stage_initial:
         ASSERT(incoming == socket);
@@ -451,7 +454,7 @@ static void dispatch_center(struct tunnel_ctx *tunnel, struct socket_ctx *socket
         incoming->rdstate = socket_state_stop;
         do_handle_client_feedback(tunnel, incoming);
         break;
-    case tunnel_stage_proto_confirm_done:
+    case tunnel_stage_protocol_confirm_done:
         ASSERT(incoming == socket);
         ASSERT(incoming->rdstate == socket_state_stop);
         ASSERT(incoming->wrstate == socket_state_done);
@@ -478,7 +481,7 @@ static void dispatch_center(struct tunnel_ctx *tunnel, struct socket_ctx *socket
         }
         break;
     case tunnel_stage_streaming:
-        tunnel_traditional_streaming(tunnel, socket);
+        tunnel_server_streaming(tunnel, socket);
         break;
     case tunnel_stage_udp_streaming:
         tunnel_udp_streaming(tunnel, socket);
@@ -500,11 +503,11 @@ static void tunnel_timeout_expire_done(struct tunnel_ctx *tunnel, struct socket_
 }
 
 static void tunnel_outgoing_connected_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
-    tunnel->dispatch_center(tunnel, socket);
+    tunnel->tunnel_dispatcher(tunnel, socket);
 }
 
 static void tunnel_read_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
-    tunnel->dispatch_center(tunnel, socket);
+    tunnel->tunnel_dispatcher(tunnel, socket);
 }
 
 static void tunnel_arrive_end_of_file(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
@@ -538,7 +541,7 @@ static void tunnel_arrive_end_of_file(struct tunnel_ctx *tunnel, struct socket_c
 }
 
 static void tunnel_getaddrinfo_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
-    tunnel->dispatch_center(tunnel, socket);
+    tunnel->tunnel_dispatcher(tunnel, socket);
 }
 
 static void tunnel_write_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
@@ -550,12 +553,7 @@ static void tunnel_write_done(struct tunnel_ctx *tunnel, struct socket_ctx *sock
         incoming->wrstate = socket_state_stop;
         tunnel->tunnel_shutdown(tunnel);
     } else {
-        if (tunnel->tunnel_is_in_streaming(tunnel) == true) {
-            // in streaming stage, do nothing and return.
-            socket->wrstate = socket_state_stop;
-        } else {
-            tunnel->dispatch_center(tunnel, socket);
-        }
+        tunnel->tunnel_dispatcher(tunnel, socket);
     }
 }
 
@@ -577,10 +575,17 @@ static size_t tunnel_get_alloc_size(struct tunnel_ctx *tunnel, struct socket_ctx
 }
 
 static bool tunnel_is_in_streaming(struct tunnel_ctx* tunnel) {
-    // struct server_ctx *ctx = (struct server_ctx *) tunnel->data;
-    // return (ctx->stage == tunnel_stage_streaming);
+#if 1
+    struct server_ctx *ctx = (struct server_ctx *) tunnel->data;
+    if (ctx->udp_relay != NULL) {
+        return (ctx->stage == tunnel_stage_udp_streaming);
+    } else {
+        return (ctx->stage == tunnel_stage_streaming);
+    }
+#else
     (void)tunnel;
     return false;
+#endif
 }
 
 static bool is_incoming_ip_legal(struct tunnel_ctx *tunnel) {
@@ -679,7 +684,7 @@ static void do_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *incomi
         if (proto_confirm) {
             ASSERT(obfs_receipt == NULL);
             socket_write(incoming, buffer_get_data(proto_confirm, NULL), buffer_get_length(proto_confirm));
-            ctx->stage = tunnel_stage_proto_confirm_done;
+            ctx->stage = tunnel_stage_protocol_confirm_done;
             break;
         }
 
@@ -755,7 +760,7 @@ static void do_handle_client_feedback(struct tunnel_ctx *tunnel, struct socket_c
 
         if (proto_confirm) {
             socket_write(incoming, buffer_get_data(proto_confirm, NULL), buffer_get_length(proto_confirm));
-            ctx->stage = tunnel_stage_proto_confirm_done;
+            ctx->stage = tunnel_stage_protocol_confirm_done;
             break;
         }
 
@@ -1171,6 +1176,38 @@ static void do_tls_launch_streaming(struct tunnel_ctx *tunnel, struct socket_ctx
     ctx->stage = tunnel_stage_streaming;
 }
 
+static void tunnel_server_streaming(struct tunnel_ctx* tunnel, struct socket_ctx* socket) {
+    struct socket_ctx* current_socket = socket;
+    struct socket_ctx* target_socket = NULL;
+
+    ASSERT(current_socket == tunnel->incoming || current_socket == tunnel->outgoing);
+
+    target_socket = ((current_socket == tunnel->incoming) ? tunnel->outgoing : tunnel->incoming);
+
+    ASSERT((current_socket->wrstate == socket_state_done) || (current_socket->rdstate == socket_state_done));
+    ASSERT((target_socket->wrstate != socket_state_done) && (target_socket->rdstate != socket_state_done));
+
+    if (current_socket->wrstate == socket_state_done) {
+        current_socket->wrstate = socket_state_stop;
+    } else if (current_socket->rdstate == socket_state_done) {
+        current_socket->rdstate = socket_state_stop;
+        {
+            size_t len = 0;
+            uint8_t* buf = NULL;
+            ASSERT(tunnel->tunnel_extract_data);
+            buf = tunnel->tunnel_extract_data(current_socket, &malloc, &len);
+            if (buf /* && len > 0 */) {
+                socket_write(target_socket, buf, len);
+            } else {
+                tunnel->tunnel_shutdown(tunnel);
+            }
+            free(buf);
+        }
+    } else {
+        ASSERT(false);
+    }
+}
+
 static void do_udp_launch_streaming(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
     struct server_ctx *ctx = (struct server_ctx *) tunnel->data;
     struct server_config *config = ctx->env->config;
@@ -1199,7 +1236,7 @@ static void do_udp_launch_streaming(struct tunnel_ctx *tunnel, struct socket_ctx
         udp_remote_send_data(ctx->udp_relay, p, p_len);
     }
 
-    socket_read(incoming, false);
+    socket_read(incoming, true);
     ctx->stage = tunnel_stage_udp_streaming;
 }
 
@@ -1232,8 +1269,6 @@ static void tunnel_udp_streaming(struct tunnel_ctx *tunnel, struct socket_ctx *s
 
         buffer_release(src);
         buffer_release(buf);
-
-        socket_read(socket, true);
     } else if (socket->wrstate == socket_state_done) {
         socket->wrstate = socket_state_stop;
     } else {
