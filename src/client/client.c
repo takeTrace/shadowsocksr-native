@@ -129,7 +129,7 @@ static void tunnel_timeout_expire_done(struct tunnel_ctx *tunnel, struct socket_
 static void tunnel_outgoing_connected_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
 static void tunnel_read_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
 static void tunnel_arrive_end_of_file(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
-static void tunnel_getaddrinfo_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
+static void tunnel_on_getaddrinfo_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
 static void tunnel_write_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket);
 static size_t tunnel_get_alloc_size(struct tunnel_ctx *tunnel, struct socket_ctx *socket, size_t suggested_size);
 static bool tunnel_ssr_is_in_streaming(struct tunnel_ctx* tunnel);
@@ -171,7 +171,7 @@ static bool init_done_cb(struct tunnel_ctx *tunnel, void *p) {
     tunnel->tunnel_outgoing_connected_done = &tunnel_outgoing_connected_done;
     tunnel->tunnel_read_done = &tunnel_read_done;
     tunnel->tunnel_arrive_end_of_file = &tunnel_arrive_end_of_file;
-    tunnel->tunnel_getaddrinfo_done = &tunnel_getaddrinfo_done;
+    tunnel->tunnel_on_getaddrinfo_done = &tunnel_on_getaddrinfo_done;
     tunnel->tunnel_write_done = &tunnel_write_done;
     tunnel->tunnel_get_alloc_size = &tunnel_get_alloc_size;
     tunnel->tunnel_extract_data = &tunnel_extract_data;
@@ -617,7 +617,8 @@ static void _tls_cli_tcp_conn_cb(struct tls_cli_ctx *cli, void *p) {
 
 static struct tls_cli_ctx* tls_client_creator(struct client_ctx* ctx, struct server_config* config) {
     struct tunnel_ctx* tunnel = ctx->tunnel;
-    struct tls_cli_ctx* tls_cli = tls_client_launch(tunnel->loop, config);
+    struct tls_cli_ctx* tls_cli = tls_client_launch(tunnel->loop, config->over_tls_server_domain,
+        config->remote_host, config->remote_port, config->connect_timeout_ms);
     tls_client_set_tcp_connect_callback(tls_cli, _tls_cli_tcp_conn_cb, ctx);
     tls_cli_set_on_connection_established_callback(tls_cli, tls_cli_on_connection_established, ctx);
     tls_cli_set_on_write_done_callback(tls_cli, tls_cli_on_write_done, ctx);
@@ -1036,7 +1037,7 @@ static void tunnel_arrive_end_of_file(struct tunnel_ctx *tunnel, struct socket_c
     tunnel->tunnel_shutdown(tunnel);
 }
 
-static void tunnel_getaddrinfo_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
+static void tunnel_on_getaddrinfo_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
     tunnel->tunnel_dispatcher(tunnel, socket);
 }
 
@@ -1096,7 +1097,7 @@ static void tls_cli_send_websocket_data(struct client_ctx* ctx, const uint8_t* b
     uint8_t* frame;
     ws_frame_binary_alone(true, &info);
     frame = websocket_build_frame(&info, buf, len, &malloc);
-    tls_cli_send_data(ctx->tls_ctx, frame, info.frame_size);
+    tls_client_send_data(ctx->tls_ctx, frame, info.frame_size);
     free(frame);
 }
 
@@ -1205,7 +1206,7 @@ static void tls_cli_on_connection_established(struct tls_cli_ctx* tls_cli, int s
                 free(b64str);
                 free(addr_p);
             }
-            tls_cli_send_data(ctx->tls_ctx, buf, len);
+            tls_client_send_data(ctx->tls_ctx, buf, len);
             ctx->stage = tunnel_stage_tls_websocket_upgrade;
 
             free(buf);
