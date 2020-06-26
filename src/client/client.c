@@ -1498,7 +1498,7 @@ void udp_on_recv_data(struct udp_listener_ctx_t* udp_ctx, const union sockaddr_u
     struct server_config* config = env->config;
     struct tunnel_ctx* tunnel = NULL;
     struct client_ctx* ctx = NULL;
-    size_t data_len, frag_number;
+    size_t data_len = 0, frag_number = 0;
     const uint8_t* data_p = buffer_get_data(data, &data_len);
     struct udp_data_context* query_data;
     const uint8_t* raw_p = NULL; size_t raw_len = 0;
@@ -1511,7 +1511,12 @@ void udp_on_recv_data(struct udp_listener_ctx_t* udp_ctx, const union sockaddr_u
 
     raw_p = s5_parse_upd_package(data_p, data_len, &query_data->target_addr, &frag_number, &raw_len);
     if (frag_number != 0) {
-        // We don't process fragmented UDP packages and just drop them.
+        pr_err("%s", "[UDP] We don't process fragmented UDP packages and just drop them.");
+        udp_data_context_destroy(query_data);
+        return;
+    }
+    if (query_data->target_addr.addr_type == SOCKS5_ADDRTYPE_INVALID) {
+        pr_err("%s", "[UDP] target address invalid");
         udp_data_context_destroy(query_data);
         return;
     }
