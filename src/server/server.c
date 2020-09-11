@@ -51,8 +51,9 @@ struct ssr_server_state {
     V(5, tunnel_stage_connect_host,             "tunnel_stage_connect_host")            \
     V(6, tunnel_stage_launch_streaming,         "tunnel_stage_launch_streaming")        \
     V(7, tunnel_stage_tls_client_feedback,      "tunnel_stage_tls_client_feedback")     \
-    V(8, tunnel_stage_streaming,                "tunnel_stage_streaming")               \
-    V(9, tunnel_stage_udp_streaming,            "tunnel_stage_udp_streaming")           \
+    V(8, tunnel_stage_normal_response,          "tunnel_stage_normal_response")         \
+    V(9, tunnel_stage_streaming,                "tunnel_stage_streaming")               \
+    V(10, tunnel_stage_udp_streaming,            "tunnel_stage_udp_streaming")          \
 
 enum tunnel_stage {
 #define TUNNEL_STAGE_GEN(code, name, _) name = code,
@@ -452,7 +453,7 @@ static void tunnel_destroying(struct tunnel_ctx* tunnel) {
         tunnel_cipher_release(ctx->cipher);
     }
     buffer_release(ctx->init_pkg);
-    if (ctx->sec_websocket_key) { free(ctx->sec_websocket_key); }
+    object_safe_free((void**)&ctx->sec_websocket_key);
     buffer_release(ctx->client_delivery_cache);
     cstl_deque_delete(ctx->udp_recv_deque);
     free(ctx);
@@ -521,6 +522,10 @@ static void tunnel_dispatcher(struct tunnel_ctx* tunnel, struct socket_ctx* sock
         } else {
             do_tls_launch_streaming(tunnel, socket);
         }
+        break;
+    case tunnel_stage_normal_response:
+        // after send the normal HTTP response, shutdown the tunnel.
+        tunnel->tunnel_shutdown(tunnel);
         break;
     case tunnel_stage_streaming:
         tunnel_server_streaming(tunnel, socket);
@@ -1076,6 +1081,20 @@ void udp_remote_on_dying(struct udp_remote_ctx_t *remote_ctx, void*p) {
     (void)remote_ctx;
 }
 
+void do_normal_response(struct tunnel_ctx* tunnel) {
+    struct server_ctx* ctx = (struct server_ctx*)tunnel->data;
+    struct server_config* config = ctx->env->config;
+    struct socket_ctx* incoming = tunnel->incoming;
+    char* http_ok = ws_normal_response(&malloc, config->over_tls_server_domain);
+
+    ASSERT(config->over_tls_enable);
+
+    tunnel_socket_ctx_write(tunnel, incoming, http_ok, strlen(http_ok));
+    free(http_ok);
+
+    ctx->stage = tunnel_stage_normal_response;
+}
+
 static void do_tls_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
     struct server_ctx *ctx = (struct server_ctx *) tunnel->data;
     struct server_config *config = ctx->env->config;
@@ -1106,11 +1125,10 @@ static void do_tls_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *so
             const char *key = http_headers_get_field_val(hdrs, SEC_WEBSOKET_KEY);
             const char *url = http_headers_get_url(hdrs);
             if (key==NULL || url==NULL || 0 != strcmp(url, config->over_tls_path)) {
-                tunnel->tunnel_shutdown(tunnel);
+                do_normal_response(tunnel);
                 break;
             }
-            ctx->sec_websocket_key = (char *) calloc(strlen(key) + 1, sizeof(char));
-            strcpy(ctx->sec_websocket_key, key);
+            string_safe_assign(&ctx->sec_websocket_key, key);
         }
         {
             size_t cb = http_headers_get_content_beginning(hdrs);
@@ -1133,7 +1151,11 @@ static void do_tls_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *so
             buffer_store(ctx->init_pkg, data_p, data_len);
 
             addr_p = url_safe_base64_decode_alloc(udp_field, &malloc, &p_len);
-            VERIFY(socks5_address_parse(addr_p, p_len, &target_addr));
+            if (socks5_address_parse(addr_p, p_len, &target_addr) == false) {
+                free(addr_p);
+                do_normal_response(tunnel);
+                break;
+            }
             free(addr_p);
 
             udp_ctx = udp_remote_launch_begin(loop, config->udp_timeout, &target_addr);
@@ -1149,7 +1171,7 @@ static void do_tls_init_package(struct tunnel_ctx *tunnel, struct socket_ctx *so
         }
 
         if (result==NULL || is_legal_header(result) == false) {
-            tunnel->tunnel_shutdown(tunnel);
+            do_normal_response(tunnel);
             break;
         }
         buffer_replace(ctx->init_pkg, result);
