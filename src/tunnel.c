@@ -34,7 +34,7 @@
 static void socket_ctx_timer_start(struct socket_ctx* socket);
 static void socket_ctx_timer_stop(struct socket_ctx* socket);
 
-static void tunnel_socket_ctx_on_getaddrinfo_cb(struct socket_ctx* socket, int status, void* p);
+static void tunnel_socket_ctx_on_getaddrinfo_cb(struct socket_ctx* socket, int status, const struct addrinfo* ai, void* p);
 static void tunnel_socket_ctx_on_connect_cb(struct socket_ctx* socket, int status, void* p);
 static size_t tunnel_socket_ctx_on_alloc_cb(struct socket_ctx* socket, size_t size, void* p);
 static void tunnel_socket_ctx_on_read_cb(struct socket_ctx* socket, int status, const uv_buf_t* buf, void* p);
@@ -217,9 +217,10 @@ static void uv_socket_on_getaddrinfo_cb(uv_getaddrinfo_t* req, int status, struc
     socket_ctx_timer_stop(socket);
 
     if (status == 0) {
+        uint16_t port = socket->addr.addr4.sin_port;
+#if 0
         bool found = false;
         struct addrinfo* iter;
-        uint16_t port = socket->addr.addr4.sin_port;
         for (iter = ai; iter != NULL; iter = iter->ai_next) {
             if (iter->ai_family == AF_INET) {
                 socket->addr.addr4 = *(const struct sockaddr_in*)iter->ai_addr;
@@ -237,14 +238,23 @@ static void uv_socket_on_getaddrinfo_cb(uv_getaddrinfo_t* req, int status, struc
             }
         }
         ASSERT(found);
+#else
+        if (ai->ai_family == AF_INET) {
+            socket->addr.addr4 = *(const struct sockaddr_in*)ai->ai_addr;
+        } else if (ai->ai_family == AF_INET6) {
+            socket->addr.addr6 = *(const struct sockaddr_in6*)ai->ai_addr;
+        } else {
+            UNREACHABLE();
+        }
+#endif
         socket->addr.addr4.sin_port = port;
     }
 
-    uv_freeaddrinfo(ai);
-
     if (socket->on_getaddrinfo) {
-        socket->on_getaddrinfo(socket, status, socket->on_getaddrinfo_p);
+        socket->on_getaddrinfo(socket, status, ai, socket->on_getaddrinfo_p);
     }
+
+    uv_freeaddrinfo(ai);
 }
 
 void socket_ctx_getaddrinfo(struct socket_ctx* socket, const char* hostname, uint16_t port) {
@@ -613,7 +623,7 @@ static size_t tunnel_socket_ctx_on_alloc_cb(struct socket_ctx* socket, size_t si
     return size;
 }
 
-static void tunnel_socket_ctx_on_getaddrinfo_cb(struct socket_ctx* socket, int status, void* p) {
+static void tunnel_socket_ctx_on_getaddrinfo_cb(struct socket_ctx* socket, int status, const struct addrinfo* ai, void* p) {
     struct tunnel_ctx* tunnel = (struct tunnel_ctx*)p;
     if (tunnel->tunnel_is_terminated(tunnel)) {
         return;
@@ -627,7 +637,7 @@ static void tunnel_socket_ctx_on_getaddrinfo_cb(struct socket_ctx* socket, int s
 
     ASSERT(tunnel->tunnel_on_getaddrinfo_done);
     if (tunnel->tunnel_on_getaddrinfo_done) {
-        tunnel->tunnel_on_getaddrinfo_done(tunnel, socket);
+        tunnel->tunnel_on_getaddrinfo_done(tunnel, socket, ai);
     }
 }
 
