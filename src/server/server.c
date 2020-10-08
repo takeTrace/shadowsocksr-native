@@ -890,10 +890,10 @@ static void do_parse(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
     struct server_ctx *ctx = (struct server_ctx *) tunnel->data;
     struct socket_ctx *outgoing = tunnel->outgoing;
     size_t offset     = 0;
-    const char *host = NULL;
+    char* host = NULL;
     struct socks5_address *s5addr;
     union sockaddr_universal target = { {0} };
-    bool ipFound = true;
+    bool ipFound = false;
     struct buffer_t *init_pkg = ctx->init_pkg;
 
     ASSERT(socket == tunnel->incoming);
@@ -910,19 +910,9 @@ static void do_parse(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
     offset = socks5_address_size(s5addr);
     buffer_shortened_to(init_pkg, offset, buffer_get_length(init_pkg) - offset);
 
-    host = s5addr->addr.domainname;
+    host = socks5_address_to_string(s5addr, &malloc, false);
 
-    if (socks5_address_to_universal(s5addr, false, &target) == false) {
-        ASSERT(s5addr->addr_type == SOCKS5_ADDRTYPE_DOMAINNAME);
-
-        if (uv_ip4_addr(host, s5addr->port, &target.addr4) != 0) {
-            if (uv_ip6_addr(host, s5addr->port, &target.addr6) != 0) {
-                ipFound = false;
-            }
-        }
-    }
-
-    if (ipFound == false) {
+    {
         struct ssr_server_state *state = (struct ssr_server_state *)ctx->env->data;
         union sockaddr_universal *addr = ip_addr_cache_retrieve_address(state->resolved_ip_cache, host, &malloc);
         if (addr) {
@@ -937,6 +927,7 @@ static void do_parse(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
         if (!validate_hostname(host, strlen(host))) {
             // report_addr(server->fd, MALFORMED);
             tunnel->tunnel_shutdown(tunnel);
+            free(host);
             return;
         }
         ctx->stage = tunnel_stage_resolve_host;
@@ -945,6 +936,7 @@ static void do_parse(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
         outgoing->addr = target;
         do_connect_host_start(tunnel, outgoing);
     }
+    free(host);
 }
 
 static void do_resolve_host_done(struct tunnel_ctx *tunnel, struct socket_ctx *socket) {
@@ -995,7 +987,9 @@ static void do_connect_host_start(struct tunnel_ctx *tunnel, struct socket_ctx *
     err = socket_ctx_connect(outgoing);
 
     if (err != 0) {
-        pr_err("connect error: %s", uv_strerror(err));
+        char* addr = socks5_address_to_string(tunnel->desired_addr, &malloc, true);
+        pr_err("connect \"%s\" error: %s", addr, uv_strerror(err));
+        free(addr);
         tunnel->tunnel_shutdown(tunnel);
         return;
     }
